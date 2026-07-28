@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Resort Restaurant — Stock Ledger</title>
+
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#16232F" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Stock Ledger" />
+<link rel="icon" href="icon-192.png" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet" />
+
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #F6F2EA; }
+  #root { min-height: 100vh; }
+  input, select, button { font: inherit; }
+  ::-webkit-scrollbar { width: 8px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- Firebase (compat SDK — simplest for a no-build-step page) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+
+<!-- React (no build step needed) -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+/* =========================================================
+   1) PASTE YOUR OWN FIREBASE CONFIG HERE
+   Get this from: Firebase Console -> Project settings -> General
+   -> "Your apps" -> Web app -> SDK setup and configuration
+   ========================================================= */
+const firebaseConfig = {
+  apiKey: "REPLACE_ME",
+  authDomain: "REPLACE_ME.firebaseapp.com",
+  projectId: "REPLACE_ME",
+  storageBucket: "REPLACE_ME.appspot.com",
+  messagingSenderId: "REPLACE_ME",
+  appId: "REPLACE_ME"
+};
+
+let db = null;
+let auth = null;
+let firebaseReady = firebaseConfig.apiKey !== "REPLACE_ME";
+if (firebaseReady) {
+  firebase.initializeApp(firebaseConfig);
+  db = firebase.firestore();
+  auth = firebase.auth();
+}
+const docRef = firebaseReady ? db.collection("stock").doc("main") : null;
+
+const CATEGORIES = [
+  { key: "fresh", label: "Fresh produce", color: "#5C7A5E" },
+  { key: "meat", label: "Meat & seafood", color: "#B3492F" },
+  { key: "frozen", label: "Frozen", color: "#3E6E8E" },
+  { key: "dry", label: "Dry goods", color: "#B8874F" },
+  { key: "beverage", label: "Beverages", color: "#6B5B95" },
+  { key: "other", label: "Other", color: "#8A7F70" },
+];
+const UNITS = ["kg", "g", "L", "ml", "unit", "case", "bottle", "bag"];
+
+function catInfo(key) { return CATEGORIES.find(c => c.key === key) || CATEGORIES[CATEGORIES.length - 1]; }
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+function fmtMoney(n) { return new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0); }
+
+const DISPLAY = "'Fraunces', serif";
+const BODY = "'Inter', sans-serif";
+const MONO = "'IBM Plex Mono', monospace";
+
+function Root() {
+  const [user, setUser] = useState(undefined); // undefined = checking, null = signed out
+
+  useEffect(() => {
+    if (!firebaseReady) { setUser(null); return; }
+    const unsub = auth.onAuthStateChanged((u) => setUser(u));
+    return () => unsub();
+  }, []);
+
+  if (!firebaseReady) {
+    return (
+      <div style={{ ...S.page, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <div style={{ fontFamily: BODY, fontSize: 14, color: "#B3492F", textAlign: "center", maxWidth: 360 }}>
+          Firebase isn't configured yet — edit firebaseConfig in index.html.
+        </div>
+      </div>
+    );
+  }
+  if (user === undefined) {
+    return (
+      <div style={{ ...S.page, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ color: "#16232F", fontFamily: BODY, fontSize: 14 }}>Loading…</div>
+      </div>
+    );
+  }
+  if (user === null) {
+    return <Login />;
+  }
+  return <App user={user} />;
+}
+
+function Login() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      await auth.signInWithEmailAndPassword(email.trim(), password);
+    } catch (err) {
+      setError("Wrong email or password.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ ...S.page, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <form onSubmit={handleSubmit} style={{ background: "#fff", borderRadius: 14, padding: "28px 26px", width: "100%", maxWidth: 360, boxShadow: "0 10px 40px rgba(22,35,47,0.12)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+          <div style={{ ...S.logoMark, width: 34, height: 34 }}>📦</div>
+          <div style={{ fontFamily: DISPLAY, fontSize: 18, color: "#241F19" }}>Stock Ledger sign in</div>
+        </div>
+        <Field label="Email" style={{ marginBottom: 12 }}>
+          <input style={S.input} type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="you@resort.com" autoFocus />
+        </Field>
+        <Field label="Password" style={{ marginBottom: 16 }}>
+          <input style={S.input} type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" />
+        </Field>
+        {error && <div style={{ ...S.errorBanner, margin: "0 0 14px" }}>{error}</div>}
+        <button type="submit" disabled={busy} style={{ ...S.primaryBtn, width: "100%", opacity: busy ? 0.6 : 1 }}>
+          {busy ? "Signing in…" : "Sign in"}
+        </button>
+        <div style={{ fontFamily: BODY, fontSize: 11.5, color: "#8A7F70", marginTop: 14, textAlign: "center" }}>
+          Ask your manager for a login if you don't have one yet.
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function App({ user }) {
+  const [items, setItems] = useState(null);
+  const [movements, setMovements] = useState([]);
+  const [error, setError] = useState(firebaseReady ? null : "Firebase isn't configured yet — edit firebaseConfig in index.html.");
+  const [query, setQuery] = useState("");
+  const [activeCat, setActiveCat] = useState("all");
+  const [showAdd, setShowAdd] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [adjustItem, setAdjustItem] = useState(null);
+  const [showLog, setShowLog] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!firebaseReady) { setItems([]); return; }
+    const unsub = docRef.onSnapshot(
+      (snap) => {
+        const data = snap.data() || {};
+        setItems(data.items || []);
+        setMovements(data.movements || []);
+      },
+      (e) => setError("Couldn't connect to Firebase. Check your config and Firestore rules.")
+    );
+    return () => unsub();
+  }, []);
+
+  async function persist(nextItems, nextMovements) {
+    if (!firebaseReady) return;
+    setSaving(true);
+    try {
+      await docRef.set({ items: nextItems, movements: nextMovements });
+      setError(null);
+    } catch (e) {
+      setError("Couldn't save changes. Check your Firestore rules.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function addItem(newItem) {
+    const next = [...items, { ...newItem, id: uid() }];
+    setItems(next); persist(next, movements);
+  }
+  function updateItem(itemId, patch) {
+    const next = items.map(it => it.id === itemId ? { ...it, ...patch } : it);
+    setItems(next); persist(next, movements);
+  }
+  function adjustStock(itemId, delta, note, type) {
+    const next = items.map(it => it.id === itemId ? { ...it, quantity: Math.max(0, +(it.quantity + delta).toFixed(3)) } : it);
+    const mv = { id: uid(), itemId, type, qty: Math.abs(delta), note: note || "", ts: new Date().toISOString() };
+    const nextMovements = [mv, ...movements].slice(0, 300);
+    setItems(next); setMovements(nextMovements); persist(next, nextMovements);
+  }
+  function deleteItem(itemId) {
+    const next = items.filter(it => it.id !== itemId);
+    setItems(next); persist(next, movements);
+  }
+
+  const filtered = useMemo(() => {
+    if (!items) return [];
+    return items
+      .filter(it => activeCat === "all" ? true : it.category === activeCat)
+      .filter(it => it.name.toLowerCase().includes(query.toLowerCase()))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [items, activeCat, query]);
+
+  const totals = useMemo(() => {
+    if (!items) return { value: 0, count: 0, low: 0 };
+    const value = items.reduce((s, it) => s + it.quantity * it.costPerUnit, 0);
+    const low = items.filter(it => it.quantity <= it.minThreshold).length;
+    return { value, count: items.length, low };
+  }, [items]);
+
+  if (items === null) {
+    return <div style={{...S.page, display:"flex", alignItems:"center", justifyContent:"center"}}>
+      <div style={{ color: "#F6F2EA", fontFamily: BODY, fontSize: 14 }}>Loading the ledger…</div>
+    </div>;
+  }
+
+  return (
+    <div style={S.page}>
+      <header style={S.header}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={S.logoMark}>📦</div>
+          <div>
+            <div style={{ fontFamily: BODY, fontSize: 11, letterSpacing: 2, color: "#B8874F", textTransform: "uppercase" }}>Resort Restaurant</div>
+            <h1 style={S.h1}>Stock Ledger</h1>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={S.logBtn} onClick={() => setShowLog(true)}>📋 Log</button>
+          <button style={S.logBtn} onClick={() => auth.signOut()} title={user?.email}>⏻ Sign out</button>
+        </div>
+      </header>
+
+      <section style={S.statsRow}>
+        <StatCard label="Total stock value" value={`$${fmtMoney(totals.value)}`} accent="#B8874F" />
+        <StatCard label="Items tracked" value={totals.count} accent="#5C7A5E" />
+        <StatCard label="Low stock" value={totals.low} accent="#B3492F" warn={totals.low > 0} />
+      </section>
+
+      <section style={S.toolbar}>
+        <div style={S.searchBox}>
+          🔍
+          <input style={S.searchInput} placeholder="Search an item…" value={query} onChange={e => setQuery(e.target.value)} />
+        </div>
+        <button style={S.addBtn} onClick={() => setShowAdd(true)}>＋ New item</button>
+      </section>
+
+      <div style={S.catRow}>
+        <CatChip label="All" active={activeCat === "all"} onClick={() => setActiveCat("all")} />
+        {CATEGORIES.map(c => (
+          <CatChip key={c.key} label={c.label} color={c.color} active={activeCat === c.key} onClick={() => setActiveCat(c.key)} />
+        ))}
+      </div>
+
+      {error && <div style={S.errorBanner}>{error}</div>}
+
+      <main style={S.grid}>
+        {filtered.length === 0 && (
+          <div style={S.emptyState}>
+            <div style={{ fontSize: 28 }}>📦</div>
+            <div style={{ fontFamily: DISPLAY, fontSize: 18, color: "#5A5246", marginTop: 10 }}>
+              {items.length === 0 ? "The ledger is empty" : "No items match"}
+            </div>
+            <div style={{ fontFamily: BODY, fontSize: 13, color: "#8A7F70", marginTop: 4 }}>
+              {items.length === 0 ? "Add your first item to start tracking." : "Try another search or category."}
+            </div>
+          </div>
+        )}
+        {filtered.map(it => (
+          <StockCard key={it.id} item={it} onAdjust={() => setAdjustItem(it)} onEdit={() => setEditItem(it)} onDelete={() => deleteItem(it.id)} />
+        ))}
+      </main>
+
+      {showAdd && <ItemModal title="New item" onClose={() => setShowAdd(false)} onSave={(item) => { addItem(item); setShowAdd(false); }} />}
+      {editItem && <ItemModal title="Edit item" initial={editItem} onClose={() => setEditItem(null)} onSave={(patch) => { updateItem(editItem.id, patch); setEditItem(null); }} />}
+      {adjustItem && <AdjustModal item={adjustItem} onClose={() => setAdjustItem(null)} onConfirm={(delta, note, type) => { adjustStock(adjustItem.id, delta, note, type); setAdjustItem(null); }} />}
+      {showLog && <LogModal movements={movements} items={items} onClose={() => setShowLog(false)} />}
+
+      <footer style={S.footerNote}>Shared with your whole team · {saving ? "Saving…" : (firebaseReady ? "Synced" : "Not connected")}</footer>
+    </div>
+  );
+}
+
+function StatCard({ label, value, accent, warn }) {
+  return (
+    <div style={{ ...S.statCard, borderColor: warn ? "#B3492F55" : "#00000012" }}>
+      <div style={{ width: 4, alignSelf: "stretch", background: accent, borderRadius: 3 }} />
+      <div style={{ padding: "12px 16px" }}>
+        <div style={{ fontFamily: BODY, fontSize: 11, color: "#8A7F70" }}>{label}</div>
+        <div style={{ fontFamily: MONO, fontSize: 22, color: "#2A2E33", marginTop: 2 }}>{value}</div>
+      </div>
+    </div>
+  );
+}
+
+function CatChip({ label, color, active, onClick }) {
+  return (
+    <button onClick={onClick} style={{
+      fontFamily: BODY, fontSize: 12.5, padding: "7px 13px", borderRadius: 20,
+      border: active ? `1.5px solid ${color || "#16232F"}` : "1.5px solid #E4DDD0",
+      background: active ? `${color || "#16232F"}14` : "#fff",
+      color: active ? (color || "#16232F") : "#7A7266",
+      cursor: "pointer", whiteSpace: "nowrap", fontWeight: active ? 600 : 500,
+    }}>{label}</button>
+  );
+}
+
+function StockCard({ item, onAdjust, onEdit, onDelete }) {
+  const cat = catInfo(item.category);
+  const low = item.quantity <= item.minThreshold;
+  const value = item.quantity * item.costPerUnit;
+  return (
+    <div style={S.card}>
+      <div style={{ width: 5, flexShrink: 0, background: cat.color }} />
+      <div style={{ padding: "16px 18px", flex: 1, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <div style={{ fontFamily: DISPLAY, fontSize: 17, color: "#241F19" }}>{item.name}</div>
+            <div style={{ fontFamily: BODY, fontSize: 11.5, color: cat.color, marginTop: 2, fontWeight: 600 }}>{cat.label}</div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {low && <div style={S.lowBadge}>⚠ Low</div>}
+            <button style={S.editIconBtn} onClick={onEdit} title="Edit item">✎</button>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+          <span style={{ fontFamily: MONO, fontSize: 26, color: low ? "#B3492F" : "#2A2E33" }}>{item.quantity}</span>
+          <span style={{ fontFamily: BODY, fontSize: 13, color: "#8A7F70" }}>{item.unit}</span>
+          <span style={{ fontFamily: BODY, fontSize: 11, color: "#B8AFA0", marginLeft: "auto" }}>min {item.minThreshold} {item.unit}</span>
+        </div>
+        <div style={{ height: 1, background: "#EFE9DC" }} />
+        <div style={{ display: "flex", justifyContent: "space-between", fontFamily: BODY, fontSize: 12.5, color: "#7A7266" }}>
+          <span>${fmtMoney(item.costPerUnit)} / {item.unit}</span>
+          <span style={{ fontFamily: MONO, color: "#2A2E33", fontWeight: 600 }}>${fmtMoney(value)}</span>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+          <button style={{ ...S.pillBtn, background: "#16232F", color: "#F6F2EA" }} onClick={onAdjust}>› Adjust</button>
+          <button style={{ ...S.pillBtn, background: "#fff", color: "#B3492F", border: "1px solid #B3492F33" }} onClick={onDelete}>Remove</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ItemModal({ title, initial, onClose, onSave }) {
+  const [name, setName] = useState(initial?.name || "");
+  const [category, setCategory] = useState(initial?.category || CATEGORIES[0].key);
+  const [unit, setUnit] = useState(initial?.unit || UNITS[0]);
+  const [quantity, setQuantity] = useState(initial ? String(initial.quantity) : "");
+  const [costPerUnit, setCostPerUnit] = useState(initial ? String(initial.costPerUnit) : "");
+  const [minThreshold, setMinThreshold] = useState(initial ? String(initial.minThreshold) : "");
+  const canSave = name.trim() && quantity !== "" && costPerUnit !== "";
+
+  return (
+    <Overlay onClose={onClose}>
+      <ModalHeader title={title} onClose={onClose} />
+      <div style={S.modalBody}>
+        <Field label="Item name"><input style={S.input} value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Chicken breast" autoFocus /></Field>
+        <Field label="Category">
+          <select style={S.input} value={category} onChange={e => setCategory(e.target.value)}>
+            {CATEGORIES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+          </select>
+        </Field>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Field label="Quantity" style={{ flex: 1 }}><input style={S.input} type="number" value={quantity} onChange={e => setQuantity(e.target.value)} placeholder="0" /></Field>
+          <Field label="Unit" style={{ flex: 1 }}>
+            <select style={S.input} value={unit} onChange={e => setUnit(e.target.value)}>
+              {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+            </select>
+          </Field>
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Field label="Cost / unit ($)" style={{ flex: 1 }}><input style={S.input} type="number" value={costPerUnit} onChange={e => setCostPerUnit(e.target.value)} placeholder="0.00" /></Field>
+          <Field label="Alert threshold" style={{ flex: 1 }}><input style={S.input} type="number" value={minThreshold} onChange={e => setMinThreshold(e.target.value)} placeholder="0" /></Field>
+        </div>
+      </div>
+      <ModalFooter>
+        <button style={S.secondaryBtn} onClick={onClose}>Cancel</button>
+        <button style={{ ...S.primaryBtn, opacity: canSave ? 1 : 0.5, cursor: canSave ? "pointer" : "not-allowed" }} disabled={!canSave}
+          onClick={() => onSave({ name: name.trim(), category, unit, quantity: parseFloat(quantity) || 0, costPerUnit: parseFloat(costPerUnit) || 0, minThreshold: parseFloat(minThreshold) || 0 })}>
+          {initial ? "Save changes" : "Add to ledger"}
+        </button>
+      </ModalFooter>
+    </Overlay>
+  );
+}
+
+function AdjustModal({ item, onClose, onConfirm }) {
+  const [mode, setMode] = useState("in");
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  const val = parseFloat(amount) || 0;
+  return (
+    <Overlay onClose={onClose}>
+      <ModalHeader title={item.name} subtitle={`Current stock: ${item.quantity} ${item.unit}`} onClose={onClose} />
+      <div style={S.modalBody}>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={{ ...S.toggleBtn, ...(mode === "in" ? S.toggleActiveIn : {}) }} onClick={() => setMode("in")}>▲ Received</button>
+          <button style={{ ...S.toggleBtn, ...(mode === "out" ? S.toggleActiveOut : {}) }} onClick={() => setMode("out")}>▼ Used</button>
+        </div>
+        <Field label={`Quantity (${item.unit})`}><input style={S.input} type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0" autoFocus /></Field>
+        <Field label="Note (optional)"><input style={S.input} value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. Supplier delivery, dinner service…" /></Field>
+        {val > 0 && (
+          <div style={{ fontFamily: BODY, fontSize: 12.5, color: "#8A7F70" }}>
+            New stock: <b style={{ color: "#2A2E33", fontFamily: MONO }}>{mode === "in" ? item.quantity + val : Math.max(0, item.quantity - val)}</b> {item.unit}
+          </div>
+        )}
+      </div>
+      <ModalFooter>
+        <button style={S.secondaryBtn} onClick={onClose}>Cancel</button>
+        <button style={{ ...S.primaryBtn, opacity: val > 0 ? 1 : 0.5, cursor: val > 0 ? "pointer" : "not-allowed" }} disabled={val <= 0}
+          onClick={() => onConfirm(mode === "in" ? val : -val, note, mode)}>Confirm</button>
+      </ModalFooter>
+    </Overlay>
+  );
+}
+
+function LogModal({ movements, items, onClose }) {
+  function itemName(id) { const it = items.find(i => i.id === id); return it ? it.name : "Deleted item"; }
+  return (
+    <Overlay onClose={onClose}>
+      <ModalHeader title="Movement log" onClose={onClose} />
+      <div style={{ ...S.modalBody, maxHeight: 420, overflowY: "auto" }}>
+        {movements.length === 0 && <div style={{ fontFamily: BODY, fontSize: 13, color: "#8A7F70", textAlign: "center", padding: "20px 0" }}>No movements recorded yet.</div>}
+        {movements.map(mv => (
+          <div key={mv.id} style={S.logRow}>
+            <div style={{ ...S.logIcon, background: mv.type === "in" ? "#5C7A5E1A" : "#B3492F1A", color: mv.type === "in" ? "#5C7A5E" : "#B3492F" }}>{mv.type === "in" ? "▲" : "▼"}</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontFamily: BODY, fontSize: 13.5, color: "#2A2E33", fontWeight: 600 }}>{itemName(mv.itemId)}</div>
+              {mv.note && <div style={{ fontFamily: BODY, fontSize: 12, color: "#8A7F70" }}>{mv.note}</div>}
+              <div style={{ fontFamily: BODY, fontSize: 11, color: "#B8AFA0", marginTop: 2 }}>{new Date(mv.ts).toLocaleString("en-US")}</div>
+            </div>
+            <div style={{ fontFamily: MONO, fontSize: 14, color: mv.type === "in" ? "#5C7A5E" : "#B3492F" }}>{mv.type === "in" ? "+" : "−"}{mv.qty}</div>
+          </div>
+        ))}
+      </div>
+    </Overlay>
+  );
+}
+
+function Field({ label, children, style }) {
+  return <label style={{ display: "flex", flexDirection: "column", gap: 6, ...style }}>
+    <span style={{ fontFamily: BODY, fontSize: 11.5, color: "#8A7F70", fontWeight: 600 }}>{label}</span>
+    {children}
+  </label>;
+}
+function Overlay({ children, onClose }) {
+  return <div style={S.overlay} onClick={onClose}><div style={S.modal} onClick={e => e.stopPropagation()}>{children}</div></div>;
+}
+function ModalHeader({ title, subtitle, onClose }) {
+  return <div style={S.modalHeader}>
+    <div>
+      <div style={{ fontFamily: DISPLAY, fontSize: 19, color: "#241F19" }}>{title}</div>
+      {subtitle && <div style={{ fontFamily: BODY, fontSize: 12.5, color: "#8A7F70", marginTop: 2 }}>{subtitle}</div>}
+    </div>
+    <button style={S.closeBtn} onClick={onClose}>✕</button>
+  </div>;
+}
+function ModalFooter({ children }) { return <div style={S.modalFooter}>{children}</div>; }
+
+const S = {
+  page: { minHeight: "100vh", background: "#F6F2EA", fontFamily: BODY, paddingBottom: 60 },
+  header: { background: "#16232F", padding: "22px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 5 },
+  logoMark: { width: 38, height: 38, borderRadius: 9, background: "#B8874F", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 18 },
+  h1: { fontFamily: DISPLAY, fontSize: 22, color: "#F6F2EA", margin: 0, marginTop: 1 },
+  logBtn: { display: "flex", alignItems: "center", gap: 7, background: "transparent", border: "1px solid #F6F2EA33", color: "#F6F2EA", padding: "9px 14px", borderRadius: 8, fontFamily: BODY, fontSize: 12.5, fontWeight: 600, cursor: "pointer" },
+  statsRow: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, padding: "20px 24px 0" },
+  statCard: { background: "#fff", borderRadius: 10, border: "1px solid #00000012", display: "flex", overflow: "hidden" },
+  toolbar: { display: "flex", gap: 12, padding: "20px 24px 0", flexWrap: "wrap" },
+  searchBox: { flex: 1, minWidth: 220, display: "flex", alignItems: "center", gap: 8, background: "#fff", border: "1px solid #E4DDD0", borderRadius: 9, padding: "10px 14px" },
+  searchInput: { border: "none", outline: "none", fontFamily: BODY, fontSize: 13.5, flex: 1, background: "transparent", color: "#2A2E33" },
+  addBtn: { display: "flex", alignItems: "center", gap: 7, background: "#B8874F", color: "#16232F", border: "none", padding: "10px 16px", borderRadius: 9, fontFamily: BODY, fontSize: 13.5, fontWeight: 700, cursor: "pointer" },
+  catRow: { display: "flex", gap: 8, padding: "16px 24px 0", overflowX: "auto" },
+  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14, padding: "20px 24px" },
+  card: { background: "#fff", borderRadius: 12, border: "1px solid #00000010", display: "flex", overflow: "hidden", boxShadow: "0 1px 2px rgba(22,35,47,0.04)" },
+  lowBadge: { display: "flex", alignItems: "center", gap: 4, background: "#B3492F14", color: "#B3492F", fontFamily: BODY, fontSize: 10.5, fontWeight: 700, padding: "4px 8px", borderRadius: 6, textTransform: "uppercase" },
+  editIconBtn: { background: "#16232F0D", border: "none", color: "#7A7266", width: 24, height: 24, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 },
+  pillBtn: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "8px 10px", borderRadius: 7, fontFamily: BODY, fontSize: 12.5, fontWeight: 600, cursor: "pointer", border: "none" },
+  emptyState: { gridColumn: "1 / -1", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "60px 20px", textAlign: "center" },
+  errorBanner: { margin: "16px 24px 0", background: "#B3492F14", color: "#B3492F", fontFamily: BODY, fontSize: 12.5, padding: "10px 14px", borderRadius: 8 },
+  footerNote: { textAlign: "center", fontFamily: BODY, fontSize: 11, color: "#B8AFA0", marginTop: 10 },
+  overlay: { position: "fixed", inset: 0, background: "rgba(22,35,47,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, zIndex: 50 },
+  modal: { background: "#FBF9F4", borderRadius: 14, width: "100%", maxWidth: 420, boxShadow: "0 20px 60px rgba(0,0,0,0.25)" },
+  modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "20px 22px 14px" },
+  modalBody: { padding: "0 22px 6px", display: "flex", flexDirection: "column", gap: 14 },
+  modalFooter: { display: "flex", gap: 10, padding: "18px 22px 22px" },
+  closeBtn: { background: "none", border: "none", color: "#8A7F70", cursor: "pointer", padding: 4, fontSize: 16 },
+  input: { border: "1px solid #E4DDD0", borderRadius: 8, padding: "10px 12px", fontFamily: BODY, fontSize: 13.5, color: "#2A2E33", outline: "none", background: "#fff", width: "100%" },
+  primaryBtn: { flex: 1, background: "#16232F", color: "#F6F2EA", border: "none", padding: "11px 16px", borderRadius: 9, fontFamily: BODY, fontSize: 13.5, fontWeight: 700 },
+  secondaryBtn: { background: "#fff", color: "#7A7266", border: "1px solid #E4DDD0", padding: "11px 16px", borderRadius: 9, fontFamily: BODY, fontSize: 13.5, fontWeight: 600, cursor: "pointer" },
+  toggleBtn: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "10px", borderRadius: 8, border: "1.5px solid #E4DDD0", background: "#fff", color: "#8A7F70", fontFamily: BODY, fontSize: 13, fontWeight: 600, cursor: "pointer" },
+  toggleActiveIn: { border: "1.5px solid #5C7A5E", background: "#5C7A5E14", color: "#5C7A5E" },
+  toggleActiveOut: { border: "1.5px solid #B3492F", background: "#B3492F14", color: "#B3492F" },
+  logRow: { display: "flex", gap: 12, alignItems: "flex-start", padding: "12px 0", borderBottom: "1px solid #EFE9DC" },
+  logIcon: { width: 28, height: 28, borderRadius: 7, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+};
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<Root />);
+</script>
+
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    });
+  }
+</script>
+</body>
+</html>
